@@ -109,3 +109,16 @@ test('default credentials dir is per-user and outside the repo', () => {
     join('C:\\Users\\K\\AppData\\Local', 'vsp-chat-core', 'chatgpt-plan'));
   assert.equal(defaultCredentialsDir({ CHAT_CORE_CREDENTIALS_DIR: '/x' }, 'linux'), '/x');
 });
+
+test('host id is a urn:uuid; a malformed unregistered one is replaced, a registered one kept', async () => {
+  const store = await tempStore();
+  const id = await store.ensureHostId();
+  assert.match(id, /^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+
+  const { writeFile } = await import('node:fs/promises');
+  await writeFile(join(store.dir, 'client.json'), JSON.stringify({ ext_agent_host_id: '_sDwyy4CsMJzKDwq8GQ3Ow' }));
+  assert.match(await store.ensureHostId(), /^urn:uuid:/, 'old pre-registration id migrated');
+
+  await writeFile(join(store.dir, 'client.json'), JSON.stringify({ ext_agent_host_id: 'legacy', client_id: 'oaiapp_x' }));
+  assert.equal(await store.ensureHostId(), 'legacy', 'bound to an issued client: untouched');
+});

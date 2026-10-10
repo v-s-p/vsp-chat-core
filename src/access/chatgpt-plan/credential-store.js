@@ -2,7 +2,13 @@ import { mkdir, readFile, writeFile, rename, rm } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
+import { randomUUID } from 'node:crypto';
+
 import { randomToken } from './pkce.js';
+
+// OpenAI's only documented form is a URN UUID ("urn:uuid:..."); other
+// shapes are rejected with invalid_authorize_request on ext_agent_host_id.
+const HOST_ID_PATTERN = /^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 // Credentials live outside the repository, per user:
 //   Windows: %LOCALAPPDATA%\vsp-chat-core\chatgpt-plan
@@ -69,8 +75,11 @@ export class CredentialStore {
   // kept even before any client id has been issued.
   async ensureHostId() {
     const client = (await this.loadClient()) ?? {};
-    if (client.ext_agent_host_id) return client.ext_agent_host_id;
-    const hostId = randomToken(16);
+    if (HOST_ID_PATTERN.test(client.ext_agent_host_id ?? '')) return client.ext_agent_host_id;
+    // A missing or malformed id is replaced. Never once a client id has been
+    // issued for it, though: the registration is bound to that host id.
+    if (client.ext_agent_host_id && client.client_id) return client.ext_agent_host_id;
+    const hostId = `urn:uuid:${randomUUID()}`;
     await this.#write('client.json', { ...client, ext_agent_host_id: hostId });
     return hostId;
   }

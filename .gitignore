@@ -1,0 +1,7 @@
+node_modules/
+*.log
+.env
+.env.*
+# Credentials are stored outside the repo by design; never commit copies.
+credentials.json
+client.json

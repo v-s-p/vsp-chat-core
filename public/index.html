@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>VSP Chat Core</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 680px; margin: 2rem auto; padding: 0 1rem; }
+  #bar { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-bottom: 0.75rem; font-size: 0.9em; }
+  #bar .tag { padding: 0.15rem 0.5rem; border-radius: 999px; background: #eef1f6; }
+  #bar .tag.plan { background: #e3f4ea; color: #0a6b3a; }
+  #bar .spacer { flex: 1; }
+  #log { border: 1px solid #ccc; border-radius: 6px; padding: 0.75rem; height: 420px; overflow-y: auto; margin-bottom: 0.75rem; }
+  .msg { margin-bottom: 0.75rem; white-space: pre-wrap; }
+  .msg.user { color: #0a6b3a; }
+  .msg.assistant { color: #12233f; }
+  .msg .role { font-weight: 600; display: block; font-size: 0.75em; opacity: 0.65; }
+  .msg .err { display: block; color: #b00020; margin-top: 0.25rem; }
+  form { display: flex; gap: 0.5rem; }
+  input[type=text] { flex: 1; padding: 0.5rem; }
+  button { padding: 0.5rem 1rem; }
+  #stop { display: none; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<h1>VSP Chat Core</h1>
+<div id="bar">
+  <span class="tag" id="providerTag">…</span>
+  <span class="tag" id="personaTag" hidden></span>
+  <select id="model" hidden></select>
+  <span class="spacer"></span>
+  <span class="tag plan" id="planTag" hidden>Using ChatGPT plan</span>
+  <a id="manageUsage" href="https://chatgpt.com/" target="_blank" rel="noopener" hidden>Manage usage</a>
+  <button type="button" id="login" hidden>Continue with ChatGPT</button>
+  <button type="button" id="logout" hidden>Sign out</button>
+  <button type="button" id="reset">New chat</button>
+</div>
+<div id="notice" class="msg" hidden></div>
+<div id="log"></div>
+<form id="form">
+  <input id="input" type="text" autocomplete="off" placeholder="Type a message..." />
+  <button type="submit" id="send">Send</button>
+  <button type="button" id="stop">Stop</button>
+</form>
+<script>
+const $ = (id) => document.getElementById(id);
+const log = $('log'), form = $('form'), input = $('input'), sendBtn = $('send'), stopBtn = $('stop');
+let state = { provider: null, auth: null };
+
+// State-changing calls are always JSON: the server rejects anything else
+// to block cross-site requests from other pages.
+function post(path, body) {
+  return fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) });
+}
+
+function notice(text) {
+  $('notice').hidden = !text;
+  $('notice').textContent = text || '';
+}
+
+function addMessage(role, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  const label = document.createElement('span');
+  label.className = 'role';
+  label.textContent = role;
+  div.appendChild(label);
+  const body = document.createElement('span');
+  body.textContent = text || '';
+  div.appendChild(body);
+  log.appendChild(div);
+  log.scrollTop = log.scrollHeight;
+  return { container: div, body };
+}
+
+function showError(bubble, error) {
+  // Partial text already streamed stays visible; the error is appended.
+  const err = document.createElement('span');
+  err.className = 'err';
+  err.textContent = 'Error: ' + error.message + (error.code ? ' [' + error.code + ']' : '');
+  bubble.container.appendChild(err);
+  if (error.code === 'plan_usage_limit') $('manageUsage').hidden = false;
+  if (error.code === 'plan_not_signed_in' || error.code === 'plan_reauth_required') refreshStatus();
+}
+
+function setGenerating(active) {
+  sendBtn.disabled = active || (state.provider === 'chatgpt-plan' && !state.auth?.signedIn);
+  input.disabled = active;
+  stopBtn.style.display = active ? 'inline-block' : 'none';
+}
+
+async function refreshStatus() {
+  const s = await (await fetch('/api/status')).json();
+  state = s;
+  const plan = s.provider === 'chatgpt-plan';
+  $('providerTag').textContent = plan ? 'ChatGPT plan' : 'local: ' + s.model;
+  $('personaTag').hidden = !plan;
+  $('personaTag').textContent = 'persona: ' + (s.persona || '(none)');
+  const signedIn = plan && s.auth?.signedIn;
+  $('login').hidden = !plan || signedIn;
+  $('logout').hidden = !signedIn;
+  $('planTag').hidden = !signedIn;
+  $('manageUsage').hidden = !signedIn;
+  $('model').hidden = !signedIn;
+  if (plan && !signedIn) notice('Sign in with ChatGPT to start. Your ChatGPT plan pays for replies; no API key is used.');
+  else if (signedIn && s.auth.planScope === false) notice('Signed in, but ChatGPT plan permission was not granted. Sign out and sign in again.');
+  else notice('');
+  if (signedIn) await loadModels(s.model);
+  setGenerating(false);
+}
+
+async function loadModels(selected) {
+  const res = await fetch('/api/models');
+  const sel = $('model');
+  if (!res.ok) { sel.hidden = true; return; }
+  const { models, selected: current } = await res.json();
+  sel.innerHTML = '';
+  for (const m of models) {
+    const opt = document.createElement('option');
+    opt.value = m.id; opt.textContent = m.name;
+    if (m.id === (current || selected)) opt.selected = true;
+    sel.appendChild(opt);
+  }
+}
+
+$('model').addEventListener('change', async (e) => {
+  const res = await post('/api/model', { id: e.target.value });
+  if (!res.ok) notice('Could not switch model.');
+});
+
+$('login').addEventListener('click', async () => {
+  const res = await post('/api/auth/login');
+  if (!res.ok) {
+    const body = await res.json().catch(() => ({}));
+    notice('Could not start sign-in: ' + (body.error?.message || res.status));
+    return;
+  }
+  const { authorizeUrl } = await res.json();
+  window.open(authorizeUrl, '_blank', 'noopener');
+  notice('Finish signing in in the new tab…');
+  // Poll until the loopback redirect has completed (or failed).
+  for (let i = 0; i < 150; i++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const s = await (await fetch('/api/status')).json();
+    if (s.auth?.signedIn) { refreshStatus(); return; }
+    if (!s.auth?.loginPending) {
+      const { error } = await (await fetch('/api/auth/last-error')).json();
+      notice('Sign-in did not complete' + (error ? ': ' + error.message : '.'));
+      return;
+    }
+  }
+});
+
+$('logout').addEventListener('click', async () => {
+  await post('/api/auth/logout');
+  refreshStatus();
+});
+
+$('reset').addEventListener('click', async () => {
+  await post('/api/reset');
+  log.innerHTML = '';
+});
+
+async function sendMessage(text) {
+  addMessage('user', text);
+  const assistant = addMessage('assistant', '');
+  setGenerating(true);
+
+  try {
+    const res = await post('/api/chat', { text });
+    if (!res.ok || !res.body) {
+      const body = await res.json().catch(() => ({}));
+      showError(assistant, body.error?.message ? body.error : { message: 'HTTP ' + res.status });
+      return;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (value) buffer += decoder.decode(value, { stream: true });
+
+      let idx;
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const rawEvent = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        const line = rawEvent.split('\n').find((l) => l.startsWith('data:'));
+        if (!line) continue;
+        const event = JSON.parse(line.slice(5).trim());
+
+        if (event.type === 'TextDelta') {
+          assistant.body.textContent += event.text;
+          log.scrollTop = log.scrollHeight;
+        } else if (event.type === 'Done' && event.reason === 'cancelled') {
+          assistant.body.textContent += ' [stopped]';
+        } else if (event.type === 'Failed') {
+          showError(assistant, event.error);
+        }
+      }
+
+      if (done) break;
+    }
+  } catch (err) {
+    showError(assistant, { message: err.message });
+  } finally {
+    setGenerating(false);
+  }
+}
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  sendMessage(text).catch(() => {});
+});
+
+stopBtn.addEventListener('click', () => {
+  post('/api/cancel').catch(() => {});
+});
+
+refreshStatus().catch((err) => notice('Server unreachable: ' + err.message));
+</script>
+</body>
+</html>

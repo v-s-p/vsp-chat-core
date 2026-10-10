@@ -1,0 +1,22 @@
+{
+  "name": "vsp-chat-core",
+  "version": "0.2.0",
+  "description": "Provider-independent streaming chat core. Talk to your ChatGPT plan (Sign in with ChatGPT) or a local model through one small contract. Part of Project HAV.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "homepage": "https://vspintelligence.com",
+  "repository": { "type": "git", "url": "https://github.com/v-s-p/vsp-chat-core.git" },
+  "exports": {
+    "./core/*": "./src/core/*",
+    "./adapters/*": "./src/adapters/*",
+    "./access/*": "./src/access/*",
+    "./config/*": "./src/config/*",
+    "./server": "./src/server/server.js"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "start": "node src/server/server.js --provider chatgpt-plan",
+    "start:local": "node src/server/server.js --provider local"
+  },
+  "engines": { "node": ">=22" }
+}
